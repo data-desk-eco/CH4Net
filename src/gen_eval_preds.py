@@ -1,72 +1,84 @@
-from matplotlib import pyplot as plt
-import torch 
-import numpy as np 
+"""Generate evaluation predictions from a trained CH4Net model."""
 
-from models import *
-import os
 import argparse
-from tqdm import tqdm
+import math
+from pathlib import Path
 
-from models import *
-from trainer import *
-from loader import *
+import numpy as np
+import torch
+import torch.nn.functional as F
 
-from torch.utils.data import DataLoader
-from glob import glob
-import sys
-
-# python3 gen_eval_preds.py 12 final_12_all/ final_12_preds/ 0
-in_dir = sys.argv[2]
-out_dir = sys.argv[3]
-channels = int(sys.argv[1])
-alli_yn = bool(int(sys.argv[4]))
-
-print("Loading losses...")
-losses = np.load(in_dir+"losses.npy")
-best_epoch = np.argmin(losses)
-
-device = torch.device('cuda')
-
-# Set up model
-model = Unet(in_channels=channels,
-            out_channels=1,
-            div_factor=1, 
-            prob_output=False)
-model = model.to(device)
-model = nn.DataParallel(model)
-
-model.load_state_dict(torch.load(in_dir+"epoch_{}".format(np.argmin(losses)), map_location=torch.device('cuda'))["model_state_dict"])
-model.eval()
-
-# Iterate over each plume
-for i in range(28):
-    print(i)
-    preds = []
-    targets = []
-    rgb_imgs = []
-    diff_imgs = []
-        
-    test_dataset = MethaneLoader(device = "cuda", mode="val", alli=alli_yn, plume_id=i, channels=channels)
-
-    val_loader = DataLoader(test_dataset, 
-                            batch_size = 64, 
-                            shuffle = False)
+from models import Unet
+from train import get_device
 
 
-    for batch in val_loader:
-        out = model(batch["pred"][:,:,:,:])[...,0].cpu()
-        preds.append(out.view(-1,100,100))
-        targets.append(batch["target"][...].cpu().view(-1,100,100))
-        rgb_imgs.append(batch["rgb_img"][...]*1.5/255)
-        diff_imgs.append(batch["diff_img"][...])
-    
-    if len(preds)>0:
-        preds = torch.concat(preds, dim=0).detach().numpy()
-        targets = torch.concat(targets, dim=0).detach().numpy()
-        rgb_imgs = np.concatenate(rgb_imgs, axis=0)
-        diff_imgs = np.concatenate(diff_imgs, axis=0)
+def _pad_to_multiple(x: torch.Tensor, k: int = 16) -> tuple[torch.Tensor, tuple[int, int]]:
+    """Pad spatial dims (H, W) of a (C, H, W) tensor up to the next multiple of *k*."""
+    _, h, w = x.shape
+    ph = (math.ceil(h / k) * k) - h
+    pw = (math.ceil(w / k) * k) - w
+    # pad order: (left, right, top, bottom)
+    return F.pad(x, (0, pw, 0, ph), mode="reflect"), (ph, pw)
 
-        np.save(out_dir+"out_{}.npy".format(i), preds)
-        np.save(out_dir+"target_{}.npy".format(i), targets)
-        np.save(out_dir+"rgb_{}.npy".format(i), rgb_imgs)
-        np.save(out_dir+"diff_{}.npy".format(i), diff_imgs)
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate CH4Net predictions")
+    parser.add_argument("--data-dir", type=str, default="data")
+    parser.add_argument("--model-dir", type=str, required=True, help="Directory with best.pt and losses.npy")
+    parser.add_argument("--output-dir", type=str, required=True, help="Where to save predictions")
+    parser.add_argument("--channels", type=int, default=12, choices=[2, 5, 12])
+    parser.add_argument("--split", type=str, default="val", choices=["val", "test"])
+    args = parser.parse_args()
+
+    device = get_device()
+    print(f"Using device: {device}")
+
+    # Load model
+    model = Unet(in_channels=args.channels, out_channels=1, div_factor=1, prob_output=False)
+    checkpoint = torch.load(Path(args.model_dir) / "best.pt", map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model = model.to(device)
+    model.eval()
+    print(f"Loaded model from epoch {checkpoint['epoch']} (loss={checkpoint['loss']:.4f})")
+
+    out = Path(args.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Load samples directly — pad to UNet-compatible size instead of cropping
+    split_dir = Path(args.data_dir) / args.split
+    label_dir = split_dir / "label"
+    s2_dir = split_dir / "s2"
+    sample_ids = sorted(int(p.stem) for p in label_dir.iterdir() if p.suffix == ".npy")
+
+    preds, targets = [], []
+    with torch.no_grad():
+        for sid in sample_ids:
+            label = np.load(str(label_dir / f"{sid}.npy"))
+            s2 = np.load(str(s2_dir / f"{sid}.npy"))
+
+            # Channel selection
+            if args.channels == 2:
+                s2 = s2[..., 10:]
+            elif args.channels == 5:
+                s2 = np.concatenate([s2[..., 1:4], s2[..., 10:]], axis=-1)
+
+            x = torch.from_numpy(s2.copy()).float().permute(2, 0, 1) / 255.0  # (C, H, W)
+            y = torch.from_numpy(label.copy()).float()
+
+            x_padded, (ph, pw) = _pad_to_multiple(x)
+            pred = model(x_padded.unsqueeze(0).to(device))[0, ..., 0].cpu()  # (H_pad, W_pad)
+
+            # Remove padding
+            h, w = label.shape
+            pred = pred[:h, :w]
+
+            preds.append(pred.numpy())
+            targets.append(y.numpy())
+
+    np.save(out / "preds.npy", np.array(preds, dtype=object), allow_pickle=True)
+    np.save(out / "targets.npy", np.array(targets, dtype=object), allow_pickle=True)
+    print(f"Saved {len(preds)} predictions to {out}")
+
+
+if __name__ == "__main__":
+    main()

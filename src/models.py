@@ -55,7 +55,7 @@ class Unet(nn.Module):
         super(Unet, self).__init__()
 
         self.n_channels = in_channels
-        self.bilinear = True
+        self.bilinear = False
         self.sigmoid = nn.Sigmoid()
         self.prob_output = prob_output
         self.class_output = class_output
@@ -83,8 +83,8 @@ class Unet(nn.Module):
                 if bilinear:
                     self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
                 else:
-                    self.up = nn.ConvTranpose2d(in_channels // 2, in_channels // 2,
-                                                kernel_size=2, stride=2)
+                    self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2,
+                                                 kernel_size=2, stride=2)
 
                 self.conv = double_conv(in_channels, out_channels)
 
@@ -104,10 +104,10 @@ class Unet(nn.Module):
         self.down2 = down(128//div_factor, 256//div_factor)
         self.down3 = down(256//div_factor, 512//div_factor)
         self.down4 = down(512//div_factor, 512//div_factor)
-        self.up1 = up(1024//div_factor, 256//div_factor)
-        self.up2 = up(512//div_factor, 128//div_factor)
-        self.up3 = up(256//div_factor, 64//div_factor)
-        self.up4 = up(128//div_factor, 128//div_factor)
+        self.up1 = up(1024//div_factor, 256//div_factor, self.bilinear)
+        self.up2 = up(512//div_factor, 128//div_factor, self.bilinear)
+        self.up3 = up(256//div_factor, 64//div_factor, self.bilinear)
+        self.up4 = up(128//div_factor, 128//div_factor, self.bilinear)
         self.out = nn.Conv2d(128//div_factor, 1, kernel_size=1)
 
 
