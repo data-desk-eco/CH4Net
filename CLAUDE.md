@@ -31,6 +31,7 @@ U-Net binary segmentation model for detecting methane plumes in Sentinel-2 image
 | `src/fetch_methanes2cm.py` | Download S2 L2A imagery at MethaneS2CM plume locations from Earth Search STAC |
 | `src/fetch_real_world_data.py` | Download S2 at Carbon Mapper plume locations (less useful - those plumes are from EMIT, not S2) |
 | `src/infer_real_world.py` | Run model on arbitrary S2 patches with optional labels, produces metrics + visualizations |
+| `src/export_onnx.py` | Export PyTorch checkpoint to standalone ONNX file |
 | `modal_train.py` | Modal remote training (T4 GPU, `ch4net-vol` volume) |
 
 ## Data (gitignored)
@@ -122,6 +123,9 @@ uv run python src/fetch_methanes2cm.py --n-samples 20
 
 # Run inference on fetched data
 uv run python src/infer_real_world.py --data-dir data/methanes2cm_test --model-dir output/modal_v2 --output-dir output/modal_v2/real_world_eval
+
+# Export to ONNX
+uv run python src/export_onnx.py --model-dir output/modal_v2
 ```
 
 ## S2 data access notes
